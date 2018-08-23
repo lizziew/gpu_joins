@@ -7,9 +7,9 @@
 
 using namespace std; 
 
-const int rSize = 8; 
-const int sSize = 32; 
-const int maxValue = 100; 
+const int rSize = 4; 
+const int sSize = 8; 
+const int maxValue = 10; 
 
 typedef tuple<int, int> record; 
 typedef vector<int> joinedRecord; 
@@ -87,20 +87,65 @@ vector<joinedRecord> hashJoin(vector<record> r, vector<record> s) {
   return probePhase(r, s, hashTable); 
 }
 
+vector<joinedRecord> sortMergeJoin(vector<record> r, vector<record> s) {
+  vector<joinedRecord> joined;
+
+  // Sort R and S based on join key 
+  sort(r.begin(), r.end());
+  sort(s.begin(), s.end()); 
+
+  // Scan sorted relations and compare tuples
+  int rIndex = 0, sIndex = 0;
+  while (rIndex < r.size() && sIndex < s.size()) {
+    int rKey = get<0>(r[rIndex]); 
+    int sKey = get<0>(s[sIndex]); 
+
+    if (rKey > sKey) {
+      sIndex++; 
+    } else if (rKey < sKey) {
+      rIndex++; 
+    } else {
+      joined.push_back(vector<int>{get<1>(r[rIndex]), rKey, get<1>(s[sIndex])});
+      
+      int sTempIndex = sIndex + 1;
+      while (sIndex < s.size() && (rKey == get<0>(s[sTempIndex]))) {
+        joined.push_back(vector<int>{get<1>(r[rIndex]), rKey, get<1>(s[sTempIndex])});
+        sTempIndex++; 
+      }
+
+      int rTempIndex = rIndex + 1; 
+      while (rIndex < r.size() && (sKey == get<0>(r[rTempIndex]))) {
+        joined.push_back(vector<int>{get<1>(r[rTempIndex]), rKey, get<1>(s[sIndex])});
+        rTempIndex++; 
+      }
+
+      rIndex++;
+      sIndex++; 
+    }
+  }
+
+  return joined;
+}
+
 int main() {
   // Initialize relations
-  vector<record> rRelation = generateRelation(rSize);
-  vector<record> sRelation = generateRelation(sSize);  
+  vector<record> r = generateRelation(rSize);
+  vector<record> s = generateRelation(sSize);  
 
   cout << "R Relation: " << endl;
-  printRelation(rRelation);
+  printRelation(r);
   cout << "S Relation: " << endl;
-  printRelation(sRelation);
+  printRelation(s);
 
-  vector<joinedRecord> joined = hashJoin(rRelation, sRelation);
+  vector<joinedRecord> hashJoinResult = hashJoin(r, s);
 
   cout << "Hash Join result: " << endl; 
-  printJoined(joined);
+  printJoined(hashJoinResult);
+
+  vector<joinedRecord> sortMergeJoinResult = sortMergeJoin(r, s); 
+
+  cout << "Sort Merge Join result: " << endl;
+  printJoined(sortMergeJoinResult); 
 
   return 0; 
 }
