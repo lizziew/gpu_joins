@@ -32,18 +32,20 @@ __global__ void calculateBucketSizes(int* rKeys, int rSize, int* bucketSizes, in
 void calculateBucketPositions(int*bucketSizes, int* bucketPositions, int hSize) {
   bucketPositions[0] = 0; 
   for (int i = 1; i < hSize; i++) {
-    bucketPositions[i] = bucketPositions[i-1] + 2 * bucketSizes[i]; 
+    bucketPositions[i] = bucketPositions[i-1] + 2 * bucketSizes[i-1]; 
   }
 }
 
 __global__ void buildPhase(int* rKeys, int rSize, int hSize, int* bucketSizes, int* bucketPositions, int* hashTable) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
 
-  if (idx < rSize) { 
+  for (int i = idx; i < rSize; i += stride) { 
     int rKey = rKeys[idx]; 
     int hKey = rKey & (hSize - 1);
 
     int pos = bucketPositions[hKey];
+    // TODO: Handle duplicates 
     atomicAdd(&(bucketPositions[hKey]), 2); 
     hashTable[pos] = rKey;
     hashTable[pos+1] = rKey; // TODO: Assume value = key for now  
@@ -62,7 +64,7 @@ __global__ void probePhase(int* joined, int* joinedSize, int* sKeys, int rSize, 
 
     for (int i = pos; i < pos + 2 * len; i += 2) {
       if (hashTable[i] == sKey) {
-        atomicAdd(&(joinedSize[0]), 1); 
+        printf("Writing %d to %d\n", sKey, idx); 
         joined[idx] = sKey; // TODO: Figure out how to write to array in parallel  
       }
     }
@@ -103,7 +105,7 @@ void hashJoin(int** r, int** s) {
   cudaMalloc((void**) &d_tempBucketPositions, sizeof(int) * hSize); 
   cudaMemcpy(d_tempBucketPositions, h_bucketPositions, sizeof(int) * hSize, cudaMemcpyHostToDevice); 
 
-   // Scan R and create in-memory hash table
+  // Scan R and create in-memory hash table
   int* hashTable;
   cudaMalloc((void**) &hashTable, 2 * sizeof(int) * rSize); 
   buildPhase<<<num_blocks, num_threads>>>(d_rKeys, rSize, hSize, d_bucketSizes, d_tempBucketPositions, hashTable);  
@@ -139,8 +141,10 @@ void hashJoin(int** r, int** s) {
   cudaMemcpy(h_joinedSize, d_joinedSize, sizeof(int), cudaMemcpyDeviceToHost); 
 
   printf("Final joined result:\n");
-  for (int i = 0; i < h_joinedSize[0]; i++) {
-    printf("%d ", h_joined[i]);
+  for (int i = 0; i < rSize; i++) {
+    if (h_joined[i] != 0) {
+      printf("%d ", h_joined[i]);
+    }
   }
   printf("\n");
 }
@@ -161,9 +165,10 @@ int** generateRelation(int relationSize) {
   for (int i = 0; i < relationSize; i++) 
     relation[i] = (int*) malloc(2 * sizeof(int)); 
 
-  // TODO: randomize 
+  // TODO: randomize
+  int count = rand() % 5;  
   for (int i = 0; i < relationSize; i++) {
-    int value = rand() % 10 + 1;
+    int value = ++count; 
     for (int j = 0; j < 2; j++) 
       relation[i][j] = value;
   }
