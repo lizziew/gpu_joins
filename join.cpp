@@ -8,23 +8,16 @@
 using namespace std; 
 
 const int rSize = 4; 
-const int sSize = 8; 
 const int maxValue = 10; 
+const int numRelations = 2; 
 
-typedef tuple<int, int> record; 
-typedef vector<int> joinedRecord; 
+typedef vector<int> record; 
+typedef vector<int> record; 
 
-void printRelation(vector<record> relation) {
-  for (int i = 0; i < relation.size(); i++) {
-    cout << get<0>(relation[i]) << ": " << get<1>(relation[i]) << endl; 
-  }
-  cout << endl; 
-}
-
-void printJoined(vector<joinedRecord> joined) {
-  for (int i = 0; i < joined.size(); i++) {
-    for (int j = 0; j < joined[i].size(); j++) {
-      cout << joined[i][j] << " ";
+void printRelation(vector<record> r) {
+  for (int i = 0; i < r.size(); i++) {
+    for (int j = 0; j < r[i].size(); j++) {
+      cout << r[i][j] << " ";
     }
     cout << endl; 
   }
@@ -39,7 +32,11 @@ vector<record> generateRelation(int relationSize) {
 
   for (int i = 0; i < relationSize; i++) {
     int value = uniformDistribution(gen);
-    relation.push_back(make_tuple(value, value)); 
+    vector<int> row;
+    for (int j = 0; j < 2; j++) {
+      row.push_back(value);
+    }
+    relation.push_back(row); 
   } 
 
   return relation; 
@@ -50,27 +47,27 @@ unordered_multimap<int, int> buildPhase(vector<record> r) {
 
   // Maps hash(join key) to row indices 
   for (int i = 0; i < r.size(); i++) {
-    int rKey = get<0>(r[i]);
+    int rKey = r[i][0];
     hashTable.insert(make_pair(rKey, i));
   }
 
   return hashTable; 
 }
 
-vector<joinedRecord> probePhase(
+vector<record> probePhase(
     vector<record> r, 
     vector<record> s, 
     unordered_multimap<int, int> hashTable) {
-  vector<joinedRecord> joined;
+  vector<record> joined;
 
   for (int i = 0; i < s.size(); i++) {
-    int joinKey = get<0>(s[i]);
-    int sValue = get<1>(s[i]); 
+    int joinKey = s[i][0];
+    int sValue = s[i][1]; 
 
     if (hashTable.find(joinKey) != hashTable.end()) {
       auto range = hashTable.equal_range(joinKey);
       for (auto it = range.first; it != range.second; ++it) {
-        int rValue = get<1>(r[it->second]); 
+        int rValue = r[it->second][1]; 
         joined.push_back(vector<int>{rValue, joinKey, sValue});
       }
     }
@@ -79,7 +76,7 @@ vector<joinedRecord> probePhase(
   return joined; 
 }
 
-vector<joinedRecord> hashJoin(vector<record> r, vector<record> s) {
+vector<record> hashJoin(vector<record> r, vector<record> s) {
   // Scan R and create in-memory hash table 
   unordered_multimap<int, int> hashTable = buildPhase(r);
 
@@ -87,8 +84,8 @@ vector<joinedRecord> hashJoin(vector<record> r, vector<record> s) {
   return probePhase(r, s, hashTable); 
 }
 
-vector<joinedRecord> sortMergeJoin(vector<record> r, vector<record> s) {
-  vector<joinedRecord> joined;
+vector<record> sortMergeJoin(vector<record> r, vector<record> s) {
+  vector<record> joined;
 
   // Sort R and S based on join key 
   sort(r.begin(), r.end());
@@ -97,25 +94,25 @@ vector<joinedRecord> sortMergeJoin(vector<record> r, vector<record> s) {
   // Scan sorted relations and compare tuples
   int rIndex = 0, sIndex = 0;
   while (rIndex < r.size() && sIndex < s.size()) {
-    int rKey = get<0>(r[rIndex]); 
-    int sKey = get<0>(s[sIndex]); 
+    int rKey = r[rIndex][0]; 
+    int sKey = s[sIndex][0]; 
 
     if (rKey > sKey) {
       sIndex++; 
     } else if (rKey < sKey) {
       rIndex++; 
     } else {
-      joined.push_back(vector<int>{get<1>(r[rIndex]), rKey, get<1>(s[sIndex])});
-      
+      joined.push_back(vector<int>{r[rIndex][1], rKey, s[sIndex][1]});
+
       int sTempIndex = sIndex + 1;
-      while (sIndex < s.size() && (rKey == get<0>(s[sTempIndex]))) {
-        joined.push_back(vector<int>{get<1>(r[rIndex]), rKey, get<1>(s[sTempIndex])});
+      while (sTempIndex < s.size() && (rKey == s[sTempIndex][0])) {
+        joined.push_back(vector<int>{r[rIndex][1], rKey, s[sTempIndex][1]});
         sTempIndex++; 
       }
 
       int rTempIndex = rIndex + 1; 
-      while (rIndex < r.size() && (sKey == get<0>(r[rTempIndex]))) {
-        joined.push_back(vector<int>{get<1>(r[rTempIndex]), rKey, get<1>(s[sIndex])});
+      while (rTempIndex < r.size() && (sKey == r[rTempIndex][0])) {
+        joined.push_back(vector<int>{r[rTempIndex][1], rKey, s[sIndex][1]});
         rTempIndex++; 
       }
 
@@ -127,25 +124,47 @@ vector<joinedRecord> sortMergeJoin(vector<record> r, vector<record> s) {
   return joined;
 }
 
+vector<record> multiwayHashJoin(vector<vector<record>> relations) {
+  vector<record> result = relations[0]; 
+
+  for (int i = 1; i < relations.size(); i++) {
+    result = hashJoin(relations[i], result); 
+  }
+
+  return result; 
+} 
+
+vector<record> multiwaySortMergeJoin(vector<vector<record>> relations) {
+  vector<record> result = relations[0]; 
+
+  for (int i = 1; i < relations.size(); i++) {
+    result = sortMergeJoin(relations[i], result); 
+  }
+
+  return result; 
+}
+
 int main() {
   // Initialize relations
-  vector<record> r = generateRelation(rSize);
-  vector<record> s = generateRelation(sSize);  
+  vector<vector<record>> relations;
+  for (int i = 0; i < numRelations; i++) {
+    vector<record> relation = generateRelation(rSize);
+    relations.push_back(relation);
 
-  cout << "R Relation: " << endl;
-  printRelation(r);
-  cout << "S Relation: " << endl;
-  printRelation(s);
+    cout << "Input relation:" << endl;
+    printRelation(relation); 
+    cout << endl; 
+  }
 
-  vector<joinedRecord> hashJoinResult = hashJoin(r, s);
-
+  // Hash join
+  vector<record> hashJoinResult = multiwayHashJoin(relations);
   cout << "Hash Join result: " << endl; 
-  printJoined(hashJoinResult);
+  printRelation(hashJoinResult);
 
-  vector<joinedRecord> sortMergeJoinResult = sortMergeJoin(r, s); 
-
+  // Sort merge join
+  vector<record> sortMergeJoinResult = multiwaySortMergeJoin(relations); 
   cout << "Sort Merge Join result: " << endl;
-  printJoined(sortMergeJoinResult); 
+  printRelation(sortMergeJoinResult); 
 
   return 0; 
 }
