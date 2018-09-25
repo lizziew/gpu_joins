@@ -15,26 +15,49 @@
 #include "utils/generator.h"
 #include "utils/gpu_utils.h"
 
+#include <thrust/copy.h>
+
 using namespace std;
 using namespace cub;
 
 #define DEBUG 1
+#define NGPU 2
 
 __device__ __forceinline__
 int HASH(const int key, const int num_slots) {
   return key & (num_slots - 1);
 }
 
+__forceinline__
+int HHASH(const int key, const int num_slots) {
+  return key & (num_slots - 1);
+}
+
+void partition_dev(int* h_key, int* h_val, int** key_partitions, int** val_partitions, int num_slots, int count[NGPU]) {
+  memset(count, 0, sizeof(count)); 
+
+  for (int i = 0; i < num_slots; i ++) {
+    int key = h_key[i];
+    int hash = (HHASH(key, num_slots) % NGPU);
+
+    printf("Assigning %d to partition %d at index %d\n", key, hash, count[hash]);
+    key_partitions[hash][count[hash]] = key;
+    val_partitions[hash][count[hash]] = h_val[i];
+
+    count[hash]++; 
+  }
+}
+
 __global__
 void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int num_tuples, int *hash_table, int num_slots) {
   int offset = blockIdx.x * blockDim.x + threadIdx.x;
+
   int key = d_dim_key[offset];
   int val = d_dim_val[offset];
   int hash = HASH(key, num_slots);
 
   hash_table[hash << 1] = key;
   hash_table[(hash << 1) + 1] = val;
-  // printf("key and value are %d %d\n", key, val);
 }
 
 __global__
@@ -50,9 +73,7 @@ void probe_hashtable_dev(int *d_fact_fkey, int *d_fact_val, int num_tuples, int 
     int hash = HASH(key, num_slots);
 
     int2 slot = reinterpret_cast<int2*>(hash_table)[hash];
-    // printf("Hmmmm %d %d\n", slot.x, key);
     if (slot.x == key) {
-      // printf("%d %d\n", slot.x, key);
       checksum += slot.y + val;
     }
   }
@@ -70,24 +91,67 @@ struct TimeKeeper {
 static int num_runs = 0;
 static unsigned long long* h_res = 0;
 
-TimeKeeper hashJoin(int* d_dim_key, int* d_dim_val, int* d_fact_fkey, int* d_fact_val, int num_dim, int num_fact, CachingDeviceAllocator&  g_allocator) {
+TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fact_val, int* d_dim_key, int* d_dim_val, int* d_fact_fkey, int* d_fact_val, int num_dim, int num_fact, CachingDeviceAllocator&  g_allocator) {
   SETUP_TIMING();
 
+  // Partition
+  int** h_dim_key_partitions = new int*[NGPU];
+  for(int i = 0; i < NGPU; ++i) h_dim_key_partitions[i] = new int[num_dim];
+  int** h_dim_val_partitions = new int*[NGPU];
+  for(int i = 0; i < NGPU; ++i) h_dim_val_partitions[i] = new int[num_dim];
+  int** h_fact_key_partitions = new int*[NGPU];
+  for(int i = 0; i < NGPU; ++i) h_fact_key_partitions[i] = new int[num_fact];
+  int** h_fact_val_partitions = new int*[NGPU];
+  for(int i = 0; i < NGPU; ++i) h_fact_val_partitions[i] = new int[num_fact];
+  int* h_dim_count; 
+  int* h_fact_count;
+
+  printf("Partitioning dim...\n");
+  partition_dev(h_dim_key, h_dim_val, h_dim_key_partitions, h_dim_val_partitions, num_dim, h_dim_count); 
+  for (int i = 0; i < NGPU; i++) {
+    for (int j = 0; j < h_dim_count[i]; i++) {
+      printf("%d:%d ", h_dim_key_partitions[i][j], h_dim_val_partitions[i][j]);
+    }
+    printf("\n");
+  } 
+
+  printf("Partitioning fact...\n");
+  partition_dev(h_fact_fkey, h_fact_val, h_fact_key_partitions, h_fact_val_partitions, num_fact, h_fact_count);
+  for (int i = 0; i < NGPU; i++) {
+    for (int j = 0; j < h_fact_count[i]; i++) {
+      printf("%d ", h_fact_key_partitions[i][j], h_fact_val_partitions[i][j]);
+    }
+    printf("\n");
+  } 
+
+  // Build hashtable
+  printf("Building hashtables...\n");
   int* hash_table = NULL;
   unsigned long long* res;
   int num_slots = num_dim;
   float time_build, time_probe, time_memset, time_memset2;
 
+  int* d_dim_key_partitions;
+  int* d_dim_val_partitions; 
+
   ALLOCATE(hash_table, sizeof(int) * 2 * num_dim);
   ALLOCATE(res, sizeof(long long));
+
+  ALLOCATE(d_dim_key_partitions, sizeof(int) * NGPU * num_dim);
+  ALLOCATE(d_dim_val_partitions, sizeof(int) * NGPU * num_dim); 
+
+  /*
+  CubDebugExit(cudaMemcpy(d_dim_key_partitions, h_dim_key_partitions, sizeof(int) * NGPU * num_dim, cudaMemcpyHostToDevice));
+  CubDebugExit(cudaMemcpy(d_dim_val_partitions, h_dim_val_partitions, sizeof(int) * NGPU * num_dim, cudaMemcpyHostToDevice));
 
   TIME_FUNC(cudaMemset(hash_table, 0, num_slots * sizeof(int) * 2), time_memset);
   TIME_FUNC(cudaMemset(res, 0, sizeof(long long)), time_memset2);
 
-  TIME_FUNC((build_hashtable_dev<<<num_dim/128, 128>>>(d_dim_key, d_dim_val, num_dim, hash_table, num_slots)), time_build);
-
+  // num_dim/128
+  TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key_partitions, d_dim_val_partitions, num_dim, hash_table, num_slots)), time_build);
   cudaDeviceSynchronize(); 
 
+  // Probe hashtable
   TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_fkey, d_fact_val, num_fact, hash_table, num_slots, res)), time_probe);
   cudaDeviceSynchronize(); 
 
@@ -106,7 +170,7 @@ TimeKeeper hashJoin(int* d_dim_key, int* d_dim_val, int* d_fact_fkey, int* d_fac
 
   CLEANUP(hash_table);
   CLEANUP(res);
-
+  */ 
   TimeKeeper t = {time_build, time_probe, time_memset, time_build + time_probe + time_memset};
   return t;
 }
@@ -149,8 +213,8 @@ CachingDeviceAllocator  g_allocator(true);  // Caching allocator for device memo
 //---------------------------------------------------------------------
 int main(int argc, char** argv)
 {
-  int num_fact           = 256 * 1 << 20; // 256 * 1 << 20 , 1 << 28
-  int num_dim            = 16 * 1 << 20; // 16 * 1 << 20 , 1 << 16
+  int num_fact           = 16; // 256 * 1 << 20 , 1 << 28
+  int num_dim            = 4; // 16 * 1 << 20 , 1 << 16
   int num_trials         = 3;
 
   // Initialize command line
@@ -205,17 +269,17 @@ int main(int argc, char** argv)
   CubDebugExit(cudaMemcpy(d_fact_fkey, h_fact_fkey, sizeof(int) * num_fact, cudaMemcpyHostToDevice));
   CubDebugExit(cudaMemcpy(d_fact_val, h_fact_val, sizeof(int) * num_fact, cudaMemcpyHostToDevice));
 
-  /*cout << "DIM TABLE:" << endl;
+  cout << "DIM TABLE:" << endl;
   for (int i = 0; i < num_dim; i++) cout << h_dim_key[i] << "..." << h_dim_val[i] << endl;
   cout << endl;
 
   cout << "FACT TABLE:" << endl;
   for (int i = 0; i < num_fact; i++) cout << h_fact_fkey[i] << "..." << h_fact_val[i] << endl;
-  cout << endl;*/
+  cout << endl;
 
   for (int j = 0; j < num_trials; j++) {
     cout << "TRIAL " << j << endl;
-    TimeKeeper t = hashJoin(d_dim_key, d_dim_val, d_fact_fkey, d_fact_val, num_dim, num_fact, g_allocator);
+    TimeKeeper t = hashJoin(h_dim_key, h_dim_val, h_fact_fkey, h_fact_val, d_dim_key, d_dim_val, d_fact_fkey, d_fact_val, num_dim, num_fact, g_allocator);
     cout<< "{"
       << "\"num_dim\":" << num_dim
       << ",\"num_fact\":" << num_fact
