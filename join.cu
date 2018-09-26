@@ -69,12 +69,12 @@ void probe_hashtable_dev(int *d_fact_fkey, int *d_fact_val, int num_tuples, int 
 
   for (int i = offset; i < num_tuples; i += stride) {
     int key = d_fact_fkey[i];
-    if (PRINT) printf("Key is %d: %d ... %d\n", i, key, num_slots);
+    if (PRINT) printf("Fact key at %d is %d\n", i, key);
     int val = d_fact_val[i];
     int hash = HASH(key, num_slots);
 
     int2 slot = reinterpret_cast<int2*>(hash_table)[hash];
-    if (PRINT) printf("Hash is %d; %d\n", hash, slot.x);
+    if (PRINT) printf("Key at hash %d is %d\n", hash, slot.x);
     if (slot.x == key) {
       if (PRINT) printf("%d matches! Adding %d and %d\n", key, slot.y, val);
       checksum += slot.y + val;
@@ -157,15 +157,18 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   for (int i = 0; i < NGPU; i++) {
     CubDebugExit(cudaMemcpy(d_dim_key_partitions[i], h_dim_key_partitions[i], sizeof(int) * h_dim_count[i],  cudaMemcpyHostToDevice));
     CubDebugExit(cudaMemcpy(d_dim_val_partitions[i], h_dim_val_partitions[i], sizeof(int) * h_dim_count[i], cudaMemcpyHostToDevice));
-    CubDebugExit(cudaMemcpy(d_fact_key_partitions[i], h_fact_key_partitions[i], sizeof(int) * h_fact_count[i], cudaMemcpyHostToDevice));
-    CubDebugExit(cudaMemcpy(d_fact_val_partitions[i], h_fact_val_partitions[i], sizeof(int) * h_fact_count[i], cudaMemcpyHostToDevice));
+
+    printf("%d round: Copying 4 values to pointer %d = %d\n", i, d_fact_key_partitions + i*num_fact*sizeof(int), d_fact_key_partitions[i]);
+
+    CubDebugExit(cudaMemcpy(d_fact_key_partitions + i * num_fact * sizeof(int), h_fact_key_partitions[i], sizeof(int) * h_fact_count[i], cudaMemcpyHostToDevice));
+    CubDebugExit(cudaMemcpy(d_fact_val_partitions + i * num_fact * sizeof(int), h_fact_val_partitions[i], sizeof(int) * h_fact_count[i], cudaMemcpyHostToDevice));
   }
 
   TIME_FUNC(cudaMemset(hash_table_0, 0, 2 * num_slots * sizeof(int)), time_memset);
   TIME_FUNC(cudaMemset(hash_table_1, 0, 2 * num_slots * sizeof(int)), time_memset); 
   TIME_FUNC(cudaMemset(res, 0, sizeof(long long)), time_memset2);
 
-  if (PRINT) printf("Building hashtable 0...\n");
+  if (PRINT) printf("\nBuilding hashtable 0...\n");
   // num_dim/128
   TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key_partitions[0], d_dim_val_partitions[0], h_dim_count[0], hash_table_0, num_slots)), time_build);
   cudaDeviceSynchronize(); 
@@ -175,12 +178,13 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   cudaDeviceSynchronize(); 
 
   // Probe hashtable
-  TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key_partitions[0], d_fact_val_partitions[0], h_fact_count[0], hash_table_0, num_slots, res)), time_probe);
 
+  if (PRINT) printf("\nProbing hashtable 0...\n");
+  TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key_partitions[0], d_fact_val_partitions[0], h_fact_count[0], hash_table_0, num_slots, res)), time_probe);
   cudaDeviceSynchronize(); 
 
+  if (PRINT) printf("Probing hashtable 1...\n");
   TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key_partitions[1], d_fact_val_partitions[1], h_fact_count[1], hash_table_1, num_slots, res)), time_probe);
-
   cudaDeviceSynchronize(); 
 
 #if DEBUG
