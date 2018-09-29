@@ -33,14 +33,14 @@ int HHASH(const int key, const int num_slots) {
 }
 
 __global__
-void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int num_tuples, int *hash_table, int num_slots) {
+void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int start, int num_tuples, int *hash_table, int num_slots) {
   int offset = blockIdx.x * blockDim.x + threadIdx.x;
 
   int key = d_dim_key[offset];
   int val = d_dim_val[offset];
   int hash = HASH(key, num_slots);
 
-  if (offset < num_tuples) {
+  if (offset >= start && offset < num_tuples) {
     hash_table[hash << 1] = key;
     hash_table[(hash << 1) + 1] = val;
 #if DEBUG
@@ -155,8 +155,8 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   CubDebugExit(cudaMemcpy(d_fact_count, h_fact_count, sizeof(int) * NGPU, cudaMemcpyHostToDevice));
 
   // Radix (sort dim/fact key/value by last logNGPU bits of key)
-  int start_bit = sizeof(int) * 8 - log2(2);
-  int end_bit = sizeof(int) * 8;
+  int start_bit = 0; 
+  int end_bit = log2(NGPU); 
   printf("Radix sort %d %d\n", start_bit, end_bit);
 
   void* d_dim_temp_storage = NULL;
@@ -189,8 +189,7 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
       num_dim, start_bit, end_bit);
   cudaDeviceSynchronize(); 
 #if DEBUG
-  printDeviceArray<<<1, 1>>>(d_dim_key.Current(), d_dim_val.Current(), 
-      d_dim_count, num_dim);
+  printDeviceArray<<<1, 1>>>(d_dim_key.Current(), d_dim_val.Current(), d_dim_count, num_dim);
   cudaDeviceSynchronize();  
 #endif 
 
@@ -204,8 +203,7 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
       num_fact, start_bit, end_bit);
   cudaDeviceSynchronize(); 
 #if DEBUG
-  printDeviceArray<<<1, 1>>>(d_fact_key.Current(), d_fact_val.Current(),
-      d_fact_count, num_fact); 
+  printDeviceArray<<<1, 1>>>(d_fact_key.Current(), d_fact_val.Current(), d_fact_count, num_fact); 
   cudaDeviceSynchronize(); 
 #endif 
 
@@ -228,15 +226,15 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
 #if DEBUG
   printf("\nBuilding hashtable 0...\n");
 #endif 
-  TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key.Current(), d_dim_val.Current(), h_dim_count[0],
-          hash_table_0, num_slots)), time_build);
+  TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key.Current(), d_dim_val.Current(), 0, 
+          h_dim_count[0], hash_table_0, num_slots)), time_build);
   cudaDeviceSynchronize();
 
 #if DEBUG
   printf("Building hashtable 1...\n");
 #endif 
-  TIME_FUNC((build_hashtable_dev<<<128, 128>>>(&d_dim_key.Current()[num_dim], 
-          &d_dim_val.Current()[num_dim], h_dim_count[1], hash_table_1, num_slots)), time_build);
+  TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key.Current(), d_dim_val.Current(), h_dim_count[0], 
+          h_dim_count[1], hash_table_1, num_slots)), time_build);
   cudaDeviceSynchronize(); 
 
   ///////////
