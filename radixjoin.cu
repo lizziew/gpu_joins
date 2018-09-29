@@ -19,7 +19,7 @@
 using namespace std;
 using namespace cub;
 
-#define DEBUG 1
+#define DEBUG 0
 #define NGPU 2
 
 __device__ __forceinline__
@@ -33,7 +33,8 @@ int HHASH(const int key, const int num_slots) {
 }
 
 __global__
-void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int start, int num_tuples, int *hash_table, int num_slots) {
+void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int start, int num_tuples, 
+    int *hash_table, int num_slots) {
   int offset = blockIdx.x * blockDim.x + threadIdx.x;
 
   int key = d_dim_key[offset];
@@ -41,6 +42,9 @@ void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int start, int num_tupl
   int hash = HASH(key, num_slots);
 
   if (offset >= start && offset < num_tuples) {
+#if DEBUG 
+    printf("Start: %d < Offset: %d < Num_tuples: %d\n", start, offset, num_tuples);
+#endif 
     hash_table[hash << 1] = key;
     hash_table[(hash << 1) + 1] = val;
 #if DEBUG
@@ -50,18 +54,18 @@ void build_hashtable_dev(int *d_dim_key, int *d_dim_val, int start, int num_tupl
 }
 
 __global__
-void probe_hashtable_dev(int *d_fact_fkey, int *d_fact_val, int num_tuples, int *hash_table, int num_slots, unsigned long long *res) {
+void probe_hashtable_dev(int *d_fact_fkey, int *d_fact_val, int start, int num_tuples, 
+    int *hash_table, int num_slots, unsigned long long *res) {
   int offset = blockIdx.x*blockDim.x + threadIdx.x;
-  int stride = blockDim.x * gridDim.x;
 
   unsigned long long checksum = 0;
 
-  for (int i = offset; i < num_tuples; i += stride) {
-    int key = d_fact_fkey[i];
+  if (offset >= start && offset < num_tuples) {
+    int key = d_fact_fkey[offset];
 #if DEBUG
-    printf("Fact key at %d is %d\n", i, key);
+    printf("Fact key at %d is %d\n", offset, key);
 #endif 
-    int val = d_fact_val[i];
+    int val = d_fact_val[offset];
     int hash = HASH(key, num_slots);
 
     int2 slot = reinterpret_cast<int2*>(hash_table)[hash];
@@ -74,9 +78,9 @@ void probe_hashtable_dev(int *d_fact_fkey, int *d_fact_val, int num_tuples, int 
 #endif 
       checksum += slot.y + val;
     }
-  }
 
-  atomicAdd(res, checksum);
+    atomicAdd(res, checksum);
+  }
 }
 
 struct TimeKeeper {
@@ -234,7 +238,7 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   printf("Building hashtable 1...\n");
 #endif 
   TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key.Current(), d_dim_val.Current(), h_dim_count[0], 
-          h_dim_count[1], hash_table_1, num_slots)), time_build);
+          h_dim_count[0] + h_dim_count[1], hash_table_1, num_slots)), time_build);
   cudaDeviceSynchronize(); 
 
   ///////////
@@ -244,14 +248,15 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   printf("\nProbing hashtable 0...\n");
 #endif 
   TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key.Current(), d_fact_val.Current(), 
-          h_fact_count[0], hash_table_0, num_slots, res)), time_probe);
+          0, h_fact_count[0], hash_table_0, num_slots, res)), time_probe);
   cudaDeviceSynchronize(); 
 
 #if DEBUG
   printf("Probing hashtable 1...\n");
 #endif 
-  TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(&d_fact_key.Current()[num_fact], 
-          &d_fact_val.Current()[num_fact], h_fact_count[1], hash_table_1, num_slots, res)), time_probe);
+  TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key.Current(), d_fact_val.Current(), 
+          h_fact_count[0], h_fact_count[0] + h_fact_count[1], hash_table_1, num_slots, res)), 
+      time_probe);
   cudaDeviceSynchronize(); 
 
   /////////////
@@ -326,8 +331,8 @@ CachingDeviceAllocator  g_allocator(true);  // Caching allocator for device memo
 //---------------------------------------------------------------------
 int main(int argc, char** argv)
 {
-  int num_fact           = 16; // 256 * 1 << 20 , 1 << 28
-  int num_dim            = 4; // 16 * 1 << 20 , 1 << 16
+  int num_fact           = 256 * 1 << 4; // 256 * 1 << 20 , 1 << 28
+  int num_dim            = 16 * 1 << 4; // 16 * 1 << 20 , 1 << 16
   int num_trials         = 3;
 
   // Initialize command line
