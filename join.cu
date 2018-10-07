@@ -19,7 +19,7 @@
 using namespace std;
 using namespace cub;
 
-#define DEBUG 1
+#define DEBUG 0
 #define NGPU 2
 
 __device__ __forceinline__
@@ -120,11 +120,6 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   ALLOCATE(d_fact_key_orig, sizeof(int) * NGPU * num_fact); 
   ALLOCATE(d_fact_val_orig, sizeof(int) * NGPU * num_fact); 
 
-  /*memcpy(d_dim_key_orig, h_dim_key, sizeof(int) * NGPU * num_dim); 
-    memcpy(d_dim_val_orig, h_dim_val, sizeof(int) * NGPU * num_dim);
-    memcpy(d_fact_key_orig, h_fact_fkey, sizeof(int) * NGPU * num_fact);
-    memcpy(d_fact_val_orig, h_fact_val, sizeof(int) * NGPU * num_fact); */ 
-
   CubDebugExit(cudaMemcpy(d_dim_key_orig, h_dim_key, sizeof(int) * NGPU * num_dim,  
         cudaMemcpyHostToDevice));
   CubDebugExit(cudaMemcpy(d_dim_val_orig, h_dim_val, sizeof(int) * NGPU * num_dim, 
@@ -155,17 +150,6 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
     d_fact_count[HHASH(h_fact_fkey[i], num_fact) % NGPU]++;
   }
 
-  /*
-     for (int i = 0; i < num_dim; i++) {
-     h_dim_count[HHASH(h_dim_key[i], num_dim) % NGPU]++; 
-     }
-     CubDebugExit(cudaMemcpy(d_dim_count, h_dim_count, sizeof(int) * NGPU, cudaMemcpyHostToDevice));
-
-     for (int i = 0; i < num_fact; i++) {
-     h_fact_count[HHASH(h_fact_fkey[i], num_fact) % NGPU]++; 
-     }
-     CubDebugExit(cudaMemcpy(d_fact_count, h_fact_count, sizeof(int) * NGPU, cudaMemcpyHostToDevice));*/
-
   // Radix (sort dim/fact key/value by last logNGPU bits of key)
   int start_bit = 0; 
   int end_bit = log2(NGPU);
@@ -187,12 +171,6 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   ALLOCATE(d_dim_temp1, sizeof(int) * num_dim);
   ALLOCATE(d_fact_temp0, sizeof(int) * num_fact);
   ALLOCATE(d_fact_temp1, sizeof(int) * num_fact);
-
-  /* CubDebugExit(g_allocator.DeviceAllocate((void**)&d_dim_temp0, sizeof(int) * num_dim));
-     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_dim_temp1, sizeof(int) * num_dim));
-     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_fact_temp0, sizeof(int) * num_fact));
-     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_fact_temp1, sizeof(int) * num_fact));
-   */ 
 
   cub::DoubleBuffer<int> d_dim_key_db(d_dim_key_orig, d_dim_temp0);
   cub::DoubleBuffer<int> d_dim_val_db(d_dim_val_orig, d_dim_temp1); 
@@ -245,7 +223,6 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   ///////////
   // BUILD //
   ///////////
-
   int* hash_table_0;
   int* hash_table_1; 
   unsigned long long* res0;
@@ -265,13 +242,14 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
 #if DEBUG
   printf("\nBuilding hashtable 0...\n");
 #endif
+  cudaSetDevice(0); 
   TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key, d_dim_val, 0, 
           d_dim_count[0], hash_table_0, num_slots)), time_build);
-  cudaDeviceSynchronize();
 
 #if DEBUG
   printf("Building hashtable 1...\n");
 #endif 
+  cudaSetDevice(1); 
   TIME_FUNC((build_hashtable_dev<<<128, 128>>>(d_dim_key, d_dim_val, 
           d_dim_count[0], 
           d_dim_count[0] + d_dim_count[1], hash_table_1, num_slots)), time_build);
@@ -286,7 +264,6 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
   cudaSetDevice(0); 
   TIME_FUNC((probe_hashtable_dev<<<192, 256>>>(d_fact_key, d_fact_val, 
           0, d_fact_count[0], hash_table_0, num_slots, res0)), time_probe);
-  cudaDeviceSynchronize(); 
 
 #if DEBUG
   printf("Probing hashtable 1...\n");
@@ -307,13 +284,7 @@ TimeKeeper hashJoin(int* h_dim_key, int* h_dim_val, int* h_fact_fkey, int* h_fac
 #endif
 
   cudaSetDevice(0); 
-
   cout << "GPU result: " << res0[0] + res1[0] << endl;
-
-  /*CLEANUP(hash_table_0);
-    CLEANUP(hash_table_1); 
-    CLEANUP(res0);
-    CLEANUP(res1) */
   CLEANUP(d_dim_key_db.Current());
   CLEANUP(d_dim_val_db.Current()); 
   CLEANUP(d_fact_key_db.Current());
@@ -367,8 +338,8 @@ CachingDeviceAllocator  g_allocator(true);  // Caching allocator for device memo
 //---------------------------------------------------------------------
 int main(int argc, char** argv)
 {
-  int num_fact           = 16; // 256 * 1 << 20 , 1 << 28
-  int num_dim            = 4; // 16 * 1 << 20 , 1 << 16
+  int num_fact           = 256 * 1 << 7; // 256 * 1 << 20 , 1 << 28
+  int num_dim            = 16 * 1 << 7; // 16 * 1 << 20 , 1 << 16
   int num_trials         = 3;
 
   // Initialize command line
@@ -414,9 +385,9 @@ int main(int argc, char** argv)
   // Set up multi GPU
   cudaDeviceEnablePeerAccess(1, 0);
 #if DEBUG
-  int accessible = NULL;
+  int accessible = 0;
   cudaDeviceCanAccessPeer(&accessible, 0, 1);
-  int accessible2 = NULL;
+  int accessible2 = 0;
   cudaDeviceCanAccessPeer(&accessible2, 1, 0);
   if (accessible && accessible2) printf("2 GPUs can access each other\n");
 #endif 
